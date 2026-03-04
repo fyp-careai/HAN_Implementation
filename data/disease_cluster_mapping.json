@@ -1,0 +1,118 @@
+{
+  "disease_to_cluster": {
+    "Immune disorders": 0,
+    "acid base imbalances": 2,
+    "acute": 0,
+    "adrenal gland disorders": 2,
+    "allergies": 0,
+    "anemia": 0,
+    "anemia (B12/folate)": 0,
+    "artharities": 8,
+    "asthma": 0,
+    "biliary obstruction": 0,
+    "cancer": 11,
+    "cardiovascular diseases": 0,
+    "cholestrol": 0,
+    "chronic Liver disease": 0,
+    "chronic infections": 0,
+    "chronic kidney disease": 0,
+    "chronic liver disease": 0,
+    "cirrhosis": 0,
+    "dehydration": 0,
+    "diabetes": 9,
+    "diabetes insipidus": 3,
+    "diabetes mellitus": 0,
+    "fertility conditions": 1,
+    "fluid": 2,
+    "heart arithmias": 5,
+    "heart attacks": 4,
+    "hemolytic anemia": 0,
+    "high blood pressure": 4,
+    "hyperlipidaemia": 0,
+    "hypopituitarism": 1,
+    "infections": 0,
+    "inflammation": 0,
+    "kidney damage": 7,
+    "kidney stones": 6,
+    "leukemia": 0,
+    "liver damage": 0,
+    "pancreatitis": 0,
+    "platelet disorders": 0,
+    "prolactinoma": 1,
+    "prostate cancer": 10,
+    "renal failure": 0,
+    "severe dehydration": 3,
+    "thrombocytopenia": 0,
+    "thyroid disorders": 0
+  },
+  "cluster_to_diseases": {
+    "0": [
+      "Immune disorders",
+      "acute",
+      "allergies",
+      "anemia",
+      "anemia (B12/folate)",
+      "asthma",
+      "biliary obstruction",
+      "cardiovascular diseases",
+      "cholestrol",
+      "chronic Liver disease",
+      "chronic infections",
+      "chronic kidney disease",
+      "chronic liver disease",
+      "cirrhosis",
+      "dehydration",
+      "diabetes mellitus",
+      "hemolytic anemia",
+      "hyperlipidaemia",
+      "infections",
+      "inflammation",
+      "leukemia",
+      "liver damage",
+      "pancreatitis",
+      "platelet disorders",
+      "renal failure",
+      "thrombocytopenia",
+      "thyroid disorders"
+    ],
+    "1": [
+      "fertility conditions",
+      "hypopituitarism",
+      "prolactinoma"
+    ],
+    "2": [
+      "acid base imbalances",
+      "adrenal gland disorders",
+      "fluid"
+    ],
+    "3": [
+      "diabetes insipidus",
+      "severe dehydration"
+    ],
+    "4": [
+      "heart attacks",
+      "high blood pressure"
+    ],
+    "5": [
+      "heart arithmias"
+    ],
+    "6": [
+      "kidney stones"
+    ],
+    "7": [
+      "kidney damage"
+    ],
+    "8": [
+      "artharities"
+    ],
+    "9": [
+      "diabetes"
+    ],
+    "10": [
+      "prostate cancer"
+    ],
+    "11": [
+      "cancer"
+    ]
+  }
+}
