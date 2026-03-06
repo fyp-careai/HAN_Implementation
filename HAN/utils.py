@@ -287,7 +287,11 @@ def evaluate_multiorg(model, patient_feats, labels_severity, neighbor_dicts, idx
             'num_valid_organs': 0
         }
     
-    metrics['beta'] = beta.cpu().numpy()
+    # beta is [N, K] for HANPP (patient-conditioned) or [K] for legacy models.
+    # Store the mean across patients so logging is consistent either way.
+    beta_np = beta.cpu().numpy()
+    metrics['beta'] = beta_np.mean(axis=0) if beta_np.ndim == 2 else beta_np
+    metrics['beta_per_patient'] = beta_np  # full [N, K] for interpretability analysis
     return metrics
 
 

@@ -1,0 +1,40 @@
+{
+  "cluster_to_diseases": {
+    "0": [
+      "Electrolyte_Imbalance"
+    ],
+    "1": [
+      "Dyslipidemia"
+    ],
+    "2": [
+      "Hematology_Disorder"
+    ],
+    "3": [
+      "Infection_Inflammation"
+    ],
+    "4": [
+      "Liver_Disease"
+    ],
+    "5": [
+      "Diabetes"
+    ],
+    "6": [
+      "Diabetes"
+    ],
+    "7": [
+      "Hematology_Disorder"
+    ],
+    "8": [
+      "CKD"
+    ],
+    "9": [
+      "Anemia"
+    ],
+    "10": [
+      "Thyroid_Disorder"
+    ],
+    "11": [
+      "CKD"
+    ]
+  }
+}

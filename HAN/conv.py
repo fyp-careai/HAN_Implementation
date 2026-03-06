@@ -194,6 +194,81 @@ class SemanticAttentionImproved(nn.Module):
         return Z_final, beta
 
 
+class PatientConditionedSemanticAttention(nn.Module):
+    """
+    Patient-Conditioned Semantic Attention (Novel contribution).
+
+    In the original HAN semantic attention, a single GLOBAL query vector q is
+    shared across ALL patients:
+        beta_k = softmax_k( q^T tanh(W_sem * Z_bar^Phi_k) )   -- GLOBAL
+
+    This means every patient gets identical meta-path weights, ignoring the
+    fact that different patients have different disease profiles.
+
+    We replace the global query with a PATIENT-SPECIFIC query derived from
+    the patient's own intermediate representation h_i:
+        q_i = W_q * h_i                                       -- PER-PATIENT
+        beta_k(i) = softmax_k( q_i^T tanh(W_sem * Z^Phi_k(i)) )
+
+    Clinical intuition:
+    - A patient with primarily kidney disease should weight the P-O-P
+      meta-path more (organ co-occurrence captures kidney relationships).
+    - A patient with multimorbidity should weight the P-D-P meta-path more
+      (disease co-occurrence captures comorbidities).
+    - Letting the patient's own embedding condition the weighting allows
+      the model to learn this specialisation automatically.
+
+    This is architecturally novel: no prior work applies patient-conditioned
+    semantic attention for clinical meta-path heterogeneous graphs.
+
+    Reference:
+        Wang et al. "Heterogeneous Graph Attention Network." WWW 2019.
+        (This extends their global semantic attention to patient-conditional.)
+    """
+
+    def __init__(self, hid, dropout=0.2):
+        super().__init__()
+        self.W_sem = nn.Linear(hid, hid)   # transforms each meta-path embedding
+        self.W_q = nn.Linear(hid, hid)     # projects patient embedding to query space
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, Z_list, h_patient=None):
+        """
+        Args:
+            Z_list:    list of K tensors [N, hid], one per meta-path
+            h_patient: patient embeddings [N, hid] used to compute the query.
+                       If None, falls back to global mean (same as original HAN).
+
+        Returns:
+            Z_final: [N, hid]  weighted aggregate across meta-paths
+            beta:    [N, K]    per-patient attention weights over meta-paths
+        """
+        K = len(Z_list)
+        N = Z_list[0].size(0)
+
+        # Patient-specific query: [N, hid]
+        if h_patient is None:
+            # Fallback: reproduce original HAN global behaviour (mean pooling)
+            h_patient = torch.stack(Z_list, dim=0).mean(dim=0)
+        q_i = self.W_q(h_patient)  # [N, hid]
+
+        # Per-patient, per-meta-path relevance scores: [N, K]
+        scores = []
+        for Z in Z_list:
+            Z_transformed = torch.tanh(self.W_sem(Z))          # [N, hid]
+            score = (q_i * Z_transformed).sum(dim=1)            # [N]  dot-product
+            scores.append(score)
+
+        scores = torch.stack(scores, dim=1)   # [N, K]
+        beta = F.softmax(scores, dim=1)        # [N, K]  per-patient weights (sums to 1)
+
+        # Weighted combination of meta-path embeddings
+        Z_final = sum(beta[:, k:k+1] * Z_list[k] for k in range(K))  # [N, hid]
+        Z_final = self.dropout(Z_final)  # dropout on output, not on attention weights
+
+        return Z_final, beta
+
+
 class HGTLayerSingle(nn.Module):
     """
     HGT-style multi-head attention layer.

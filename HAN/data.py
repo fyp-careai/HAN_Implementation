@@ -106,10 +106,13 @@ class MedicalGraphData:
             'PatientID': 'PatientID',
             'report_date': 'ReportDate',
             'ReportDate': 'ReportDate',
+            'record_date': 'ReportDate',       # CareAI March dataset
             'test_name': 'TestName',
             'TestName': 'TestName',
+            'mapped_test_name': 'TestName',    # CareAI March dataset
             'test_value': 'TestValue',
             'TestValue': 'TestValue',
+            'value': 'TestValue',              # CareAI March dataset
             'date_of_birth': 'DateOfBirth',
             'DateOfBirth': 'DateOfBirth',
             'age_at_report': 'AgeAtReport',
@@ -124,24 +127,23 @@ class MedicalGraphData:
         # Note: CSV has duplicate columns (organ, organ, disease, disease, disease)
         # Pandas auto-renames them as: organ, organ.1, disease, disease.1, disease.2
         # We only need the first occurrence of each
-        symptom_column_mapping = {
-            'test_name': 'TestName',
-            'TestName': 'TestName',
-            'organ': 'Target_Organ',  # First organ column
-            'Target_Organ': 'Target_Organ',
-            'disease': 'Most_Relevant_Disease',  # First disease column
-            'Most_Relevant_Disease': 'Most_Relevant_Disease',
-            'min': 'Min',
-            'Min': 'Min',
-            'max': 'Max',
-            'Max': 'Max'
+        # normalize column names
+        self.df_symptom.columns = [c.strip().lower() for c in self.df_symptom.columns]
+
+        # rename to match expected schema
+        rename_map = {
+            "test_name": "TestName",
+            "organ": "Target_Organ",
+            "disease": "disease",
+            "min": "Min",
+            "max": "Max"
         }
         
         # Rename columns that exist in the DataFrames
         rename_records = {old: new for old, new in records_column_mapping.items() if old in self.df_records.columns}
         self.df_records.rename(columns=rename_records, inplace=True)
         
-        rename_symptom = {old: new for old, new in symptom_column_mapping.items() if old in self.df_symptom.columns}
+        rename_symptom = {old: new for old, new in rename_map.items() if old in self.df_symptom.columns}
         self.df_symptom.rename(columns=rename_symptom, inplace=True)
         
         # Drop duplicate organ/disease columns if they exist
@@ -177,7 +179,7 @@ class MedicalGraphData:
         # Build entity lists
         self.symptoms = sorted(self.df_records['TestName'].unique().tolist())
         self.organs = sorted([x for x in self.df_symptom['Target_Organ'].unique() if pd.notna(x)])
-        self.diseases = sorted([x for x in self.df_symptom['Most_Relevant_Disease'].unique() if pd.notna(x)])
+        self.diseases = sorted([x for x in self.df_symptom['disease'].unique() if pd.notna(x)])
         
         # Node counts
         self.P = len(self.patient_ids)
@@ -205,7 +207,7 @@ class MedicalGraphData:
             
             low, high = parse_normal_range(row)
             self.symptom_meta[name] = {
-                'most_relevant_disease': row.get('Most_Relevant_Disease', None),
+                'most_relevant_disease': row.get('disease', None),
                 'organ': row.get('Target_Organ', None),
                 'normal_low': low,
                 'normal_high': high,
@@ -303,12 +305,16 @@ class MedicalGraphData:
         patient_symptom_dev = np.clip(patient_symptom_dev, -3.0, 3.0) / 3.0
         
         # Combine features
+        # NOTE: patient_disease is intentionally EXCLUDED from features.
+        # Including it would create circular reasoning: auto-derived disease flags
+        # (computed from the same test thresholds) would trivially predict the labels.
+        # patient_disease is still computed and available for graph construction
+        # (e.g. disease nodes, disease_map), just not used as input features.
         self.patient_feats = np.concatenate([
-            patient_symptom_dev,
-            self.patient_organ_score,
-            self.patient_disease.astype(np.float32)
+            patient_symptom_dev,       # [P, S] — normalised test-value deviations
+            self.patient_organ_score,  # [P, O] — per-organ damage scores [0,1]
         ], axis=1)
-        
+
         print(f"Patient features shape: {self.patient_feats.shape}")
     
     def build_adjacency_matrices(self):
@@ -340,7 +346,7 @@ class MedicalGraphData:
                 continue
             
             organ = row['Target_Organ']
-            disease = row['Most_Relevant_Disease']
+            disease = row['disease']
             
             if organ not in self.organ_map or disease not in self.disease_map:
                 continue
