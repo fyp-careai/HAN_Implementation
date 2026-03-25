@@ -28,6 +28,11 @@ def predict():
         sex = req.get("sex", "Unknown")
         lab_results = req.get("lab_results", [])
 
+        # Attach time_since_test (days) from each lab entry (optional field)
+        for lr in lab_results:
+            if "time_since_test" not in lr:
+                lr["time_since_test"] = None  # mark as missing if not provided
+
         if not lab_results:
             return jsonify({"error": "No lab results provided"}), 400
 
@@ -38,6 +43,14 @@ def predict():
         # --------------------------------------------------------
         # We compute abnormal features directly so we can include them in the response
         abnormal_features = extract_abnormal_features(lab_results, TEST_INFO_PATH)
+
+        # Annotate each abnormal feature with time_since_test from the matching lab entry
+        lab_time_map = {
+            str(lr.get("test_name", "")).strip(): lr.get("time_since_test")
+            for lr in lab_results
+        }
+        for feat in abnormal_features:
+            feat["time_since_test"] = lab_time_map.get(feat["test"])
 
         # --------------------------------------------------------
         # 2. Run model inference (v6 logic)

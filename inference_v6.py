@@ -502,8 +502,10 @@ def predict_new_patient_v6(
     patient_test_names = [str(r.get('test_name', '')).strip() for r in lab_results]
     test_reference = load_test_reference(TEST_REFERENCE_PATH)
 
+    top_disease = ranked_links[0][0] if ranked_links else None
+
     recommend_result = recommend_all(
-        disease_probs=disease_probs,
+        disease_probs=final_scores,
         disease_uncertainties=disease_stds,
         disease_order=disease_order,
         patient_existing_tests=patient_test_names,
@@ -512,6 +514,7 @@ def predict_new_patient_v6(
         prob_threshold_low=PROB_LOW,
         prob_threshold_high=PROB_HIGH,
         opt_thresholds=opt_thresholds,
+        top_disease_name=top_disease,
     )
 
     # ── Print ─────────────────────────────────────────────────────────────────
