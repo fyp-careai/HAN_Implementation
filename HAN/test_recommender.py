@@ -145,7 +145,8 @@ def recommend_all(disease_probs: dict,
                   prob_threshold_low: float = 0.30,
                   prob_threshold_high: float = 0.70,
                   opt_thresholds: dict = None,
-                  max_per_disease: int = 5) -> dict:
+                  max_per_disease: int = 5,
+                  top_disease_name: str = None) -> dict:
     """
     Main entry point for the test recommendation engine.
 
@@ -190,11 +191,14 @@ def recommend_all(disease_probs: dict,
         ambiguous = prob_threshold_low <= prob <= prob_threshold_high
 
         if low_conf or ambiguous:
-            recs = recommend_tests_for_disease(
-                disease, std, patient_existing_tests,
-                test_reference, max_recommendations=max_per_disease
-            )
-            uncertain[disease] = recs
+            if top_disease_name and disease != top_disease_name:
+                uncertain[disease] = []
+            else:
+                recs = recommend_tests_for_disease(
+                    disease, std, patient_existing_tests,
+                    test_reference, max_recommendations=max_per_disease
+                )
+                uncertain[disease] = recs
         elif prob >= thr:
             confirmed.append(disease)
         else:
@@ -232,7 +236,10 @@ def recommend_all(disease_probs: dict,
                         f"normal={r['normal_range']}"
                     )
             else:
-                lines.append("      (no additional tests available — patient has full panel)")
+                if top_disease_name and d != top_disease_name:
+                    lines.append("      (test recommendations restricted to the top disease)")
+                else:
+                    lines.append("      (no additional tests available — patient has full panel)")
 
     if not confirmed and not ruled_out and not uncertain:
         lines.append("\nNo predictions available.")
