@@ -6,7 +6,8 @@ from flask import Flask, request, jsonify
 from inference_v6 import (
     predict_new_patient_v6, 
     extract_abnormal_features,
-    TEST_INFO_PATH
+    TEST_INFO_PATH,
+    generate_early_warning
 )
 
 app = Flask(__name__)
@@ -80,6 +81,12 @@ def predict():
         # or keeping it grouped. We'll group them for better frontend usage.
         recommended_tests = v6_output.get("recommended_tests", {})
 
+        early_warnings = generate_early_warning(
+            predictions_formatted,
+            abnormal_features,
+            top_k=3
+        )
+
         response = {
             "patient_info": {
                 "patient_id": patient_id,
@@ -88,7 +95,9 @@ def predict():
             },
             "abnormal_labs": abnormal_features,
             "predictions": predictions_formatted[:10], # Top 10 predictions
-            "recommended_tests": recommended_tests,
+            "early_warnings": early_warnings,
+            #"recommended_tests": recommended_tests,
+            "recommended_tests": v6_output.get("recommended_tests", {}),
             "inference_details": {
                 "method": v6_output.get("method"),
                 "neighbor_count": v6_output.get("neighbor_count"),

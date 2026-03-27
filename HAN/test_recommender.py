@@ -146,7 +146,7 @@ def recommend_all(disease_probs: dict,
                   prob_threshold_high: float = 0.70,
                   opt_thresholds: dict = None,
                   max_per_disease: int = 5,
-                  top_disease_name: str = None) -> dict:
+                  top_disease_name: str = None) -> dict:  # top_disease_name retained for API compat but unused
     """
     Main entry point for the test recommendation engine.
 
@@ -154,6 +154,9 @@ def recommend_all(disease_probs: dict,
       - uncertainty > uncertainty_threshold (model is unsure), OR
       - probability is in the ambiguous zone (prob_threshold_low–prob_threshold_high)
     → generate ranked test recommendations.
+
+    CONFIRMED (high-confidence) diseases also receive recommended monitoring/follow-up
+    tests, returned under 'confirmed_disease_tests'.
 
     Args:
         disease_probs:         {disease: probability (0–1)}
@@ -167,13 +170,15 @@ def recommend_all(disease_probs: dict,
         opt_thresholds:        {disease: threshold} for confirmed/ruled-out decision
                                (falls back to 0.5 if None)
         max_per_disease:       max tests recommended per disease
+        top_disease_name:      (unused, kept for API compatibility)
 
     Returns:
         {
-          'confirmed_diseases':  [str] high-confidence positive predictions
-          'ruled_out_diseases':  [str] high-confidence negative predictions
-          'uncertain_diseases':  {disease: [rec_dicts]}  — needs more tests
-          'summary_report':      str  human-readable text
+          'confirmed_diseases':      [str] high-confidence positive predictions
+          'confirmed_disease_tests': {disease: [rec_dicts]}  — monitoring tests for confirmed
+          'ruled_out_diseases':      [str] high-confidence negative predictions
+          'uncertain_diseases':      {disease: [rec_dicts]}  — needs more tests
+          'summary_report':          str  human-readable text
         }
     """
     thresholds = opt_thresholds or {}
@@ -181,6 +186,7 @@ def recommend_all(disease_probs: dict,
     confirmed = []
     ruled_out = []
     uncertain = {}
+    confirmed_tests = {}
 
     for disease in disease_order:
         prob = float(disease_probs.get(disease, 0.0))
@@ -191,16 +197,20 @@ def recommend_all(disease_probs: dict,
         ambiguous = prob_threshold_low <= prob <= prob_threshold_high
 
         if low_conf or ambiguous:
-            if top_disease_name and disease != top_disease_name:
-                uncertain[disease] = []
-            else:
-                recs = recommend_tests_for_disease(
-                    disease, std, patient_existing_tests,
-                    test_reference, max_recommendations=max_per_disease
-                )
-                uncertain[disease] = recs
+            # Recommend tests for ALL uncertain diseases (no top-disease filter)
+            recs = recommend_tests_for_disease(
+                disease, std, patient_existing_tests,
+                test_reference, max_recommendations=max_per_disease
+            )
+            uncertain[disease] = recs
         elif prob >= thr:
             confirmed.append(disease)
+            # Also recommend monitoring/follow-up tests for confirmed diseases
+            recs = recommend_tests_for_disease(
+                disease, std, patient_existing_tests,
+                test_reference, max_recommendations=max_per_disease
+            )
+            confirmed_tests[disease] = recs
         else:
             ruled_out.append(disease)
 
@@ -213,6 +223,17 @@ def recommend_all(disease_probs: dict,
             p = disease_probs[d]
             s = disease_uncertainties[d]
             lines.append(f"  [+] {d:<30}  prob={p:.3f}  σ={s:.4f}")
+            recs = confirmed_tests.get(d, [])
+            if recs:
+                lines.append(f"      Recommended monitoring tests ({len(recs)}):")
+                for r in recs:
+                    lines.append(
+                        f"        • {r['test_name']:<40}  "
+                        f"organ={r['organ']:<25}  "
+                        f"normal={r['normal_range']}"
+                    )
+            else:
+                lines.append("      (patient has full panel for this disease)")
 
     if ruled_out:
         lines.append("\nRULED OUT (high-confidence negative):")
@@ -236,10 +257,7 @@ def recommend_all(disease_probs: dict,
                         f"normal={r['normal_range']}"
                     )
             else:
-                if top_disease_name and d != top_disease_name:
-                    lines.append("      (test recommendations restricted to the top disease)")
-                else:
-                    lines.append("      (no additional tests available — patient has full panel)")
+                lines.append("      (no additional tests available — patient has full panel)")
 
     if not confirmed and not ruled_out and not uncertain:
         lines.append("\nNo predictions available.")
@@ -247,10 +265,11 @@ def recommend_all(disease_probs: dict,
     lines.append("\n" + "=" * 60)
 
     return {
-        'confirmed_diseases': confirmed,
-        'ruled_out_diseases':  ruled_out,
-        'uncertain_diseases':  uncertain,
-        'summary_report':      "\n".join(lines),
+        'confirmed_diseases':      confirmed,
+        'confirmed_disease_tests': confirmed_tests,
+        'ruled_out_diseases':      ruled_out,
+        'uncertain_diseases':      uncertain,
+        'summary_report':          "\n".join(lines),
     }
 
 

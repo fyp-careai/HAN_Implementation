@@ -319,6 +319,94 @@ def load_model(checkpoint_path: str) -> HANPP_Disease:
     return model
 
 
+
+# ------------------------------------------------------------
+# Severity Level Determination
+# ------------------------------------------------------------
+
+def determine_severity(final_score, abnormal_features):
+
+    max_z = 0
+
+    for f in abnormal_features:
+        max_z = max(max_z, abs(f["z_ref"]))
+
+    # CRITICAL conditions
+    if final_score >= 1.5 or max_z >= 3:
+        return "CRITICAL", "🚨"
+
+    # WARNING conditions
+    elif final_score >= 1.0 or max_z >= 2:
+        return "WARNING", "⚠️"
+
+    # INFO conditions
+    elif final_score >= 0.5:
+        return "INFO", "ℹ️"
+
+    else:
+        return None, None
+
+
+
+# ------------------------------------------------------------
+# Early Warning Message Generator with Severity
+# ------------------------------------------------------------
+
+def generate_early_warning(predictions, abnormal_features, top_k=1):
+
+    warnings = []
+
+    top_diseases = predictions[:top_k]
+
+    abnormal_list = []
+
+    for f in abnormal_features:
+
+        if abs(f["z_ref"]) >= 2 or f["ratio"] >= 1.3:
+
+            if f["z_ref"] > 0:
+                direction = "elevated"
+            else:
+                direction = "decreased"
+
+            abnormal_list.append(
+                f"{f['test']} {direction}"
+            )
+
+    for d in top_diseases:
+
+        disease_name = d["disease"]
+        score = d["final_score"]
+
+        severity, emoji = determine_severity(
+            score,
+            abnormal_features
+        )
+
+        if severity is None:
+            continue
+
+        msg = f"{emoji} Early Warning ({severity})\n\n"
+
+        msg += f"High Risk of {disease_name} detected.\n\n"
+
+        if abnormal_list:
+
+            msg += "Abnormal Findings:\n"
+
+            for item in abnormal_list[:5]:
+                msg += f"- {item}\n"
+
+        msg += "\nImmediate clinical evaluation recommended."
+
+        warnings.append({
+            "severity": severity,
+            "message": msg
+        })
+
+    return warnings
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Main public API
 # ─────────────────────────────────────────────────────────────────────────────
@@ -500,9 +588,9 @@ def predict_new_patient_v6(
 
     # ── Test recommendations (based on GNN probs for threshold logic) ─────────
     patient_test_names = [str(r.get('test_name', '')).strip() for r in lab_results]
-    test_reference = load_test_reference(TEST_REFERENCE_PATH)
-
-    top_disease = ranked_links[0][0] if ranked_links else None
+    # ORGAN_PATH (test_reference_full_v2.csv) has the required 'disease' column;
+    # TEST_REFERENCE_PATH (unique_test_data_finalized.csv) does not.
+    test_reference = load_test_reference(ORGAN_PATH)
 
     recommend_result = recommend_all(
         disease_probs=final_scores,
@@ -514,7 +602,6 @@ def predict_new_patient_v6(
         prob_threshold_low=PROB_LOW,
         prob_threshold_high=PROB_HIGH,
         opt_thresholds=opt_thresholds,
-        top_disease_name=top_disease,
     )
 
     # ── Print ─────────────────────────────────────────────────────────────────
@@ -545,6 +632,12 @@ def predict_new_patient_v6(
         for d, recs in recommend_result['uncertain_diseases'].items()
     }
 
+    confirmed_tests = {
+        d: [{'test_name': r['test_name'], 'organ': r['organ'], 'normal_range': r['normal_range']}
+            for r in recs]
+        for d, recs in recommend_result['confirmed_disease_tests'].items()
+    }
+
     return {
         'patient_id':          patient_id,
         'disease_link_scores': [
@@ -557,17 +650,18 @@ def predict_new_patient_v6(
             }
             for d, gnn_s, u, fs in ranked_links
         ],
-        'predictions':         {d: round(float(p), 4) for d, p in disease_probs.items()},
-        'uncertainties':       {d: round(float(s), 4) for d, s in disease_stds.items()},
-        'rule_scores':         {d: round(float(v), 4) for d, v in rule_scores.items()},
-        'final_scores':        {d: round(float(v), 4) for d, v in final_scores.items()},
-        'confirmed':           recommend_result['confirmed_diseases'],
-        'uncertain':           list(recommend_result['uncertain_diseases'].keys()),
-        'ruled_out':           recommend_result['ruled_out_diseases'],
-        'recommended_tests':   uncertain_tests,
-        'method':              method,
-        'neighbor_count':      n_neighbors,
-        'fusion':              {'alpha': ALPHA, 'beta': BETA},
+        'predictions':              {d: round(float(p), 4) for d, p in disease_probs.items()},
+        'uncertainties':            {d: round(float(s), 4) for d, s in disease_stds.items()},
+        'rule_scores':              {d: round(float(v), 4) for d, v in rule_scores.items()},
+        'final_scores':             {d: round(float(v), 4) for d, v in final_scores.items()},
+        'confirmed':                recommend_result['confirmed_diseases'],
+        'uncertain':                list(recommend_result['uncertain_diseases'].keys()),
+        'ruled_out':                recommend_result['ruled_out_diseases'],
+        #'recommended_tests':        uncertain_tests,
+        'recommended_tests':        confirmed_tests,
+        'method':                   method,
+        'neighbor_count':           n_neighbors,
+        'fusion':                   {'alpha': ALPHA, 'beta': BETA},
     }
 
 
