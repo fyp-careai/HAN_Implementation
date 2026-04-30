@@ -1,0 +1,272 @@
+[
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 0.3,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1137,
+    "avg_top_score": 0.2878
+  },
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 0.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1401,
+    "avg_top_score": 0.2809
+  },
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 0.8,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1611,
+    "avg_top_score": 0.2711
+  },
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 1.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1687,
+    "avg_top_score": 0.265
+  },
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 1.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.177,
+    "avg_top_score": 0.2511
+  },
+  {
+    "alpha": 0.2,
+    "beta": 0.8,
+    "delta": 2.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.178,
+    "avg_top_score": 0.2388
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 0.3,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.115,
+    "avg_top_score": 0.272
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 0.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1381,
+    "avg_top_score": 0.2659
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 0.8,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1565,
+    "avg_top_score": 0.2574
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 1.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1632,
+    "avg_top_score": 0.2521
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 1.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1704,
+    "avg_top_score": 0.2399
+  },
+  {
+    "alpha": 0.3,
+    "beta": 0.7,
+    "delta": 2.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1713,
+    "avg_top_score": 0.2291
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 0.3,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1164,
+    "avg_top_score": 0.2562
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 0.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1362,
+    "avg_top_score": 0.251
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 0.8,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.152,
+    "avg_top_score": 0.2437
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 1.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1576,
+    "avg_top_score": 0.2392
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 1.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1639,
+    "avg_top_score": 0.2287
+  },
+  {
+    "alpha": 0.4,
+    "beta": 0.6,
+    "delta": 2.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1646,
+    "avg_top_score": 0.2195
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 0.3,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1177,
+    "avg_top_score": 0.2405
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 0.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1342,
+    "avg_top_score": 0.2361
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 0.8,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1474,
+    "avg_top_score": 0.23
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 1.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1521,
+    "avg_top_score": 0.2262
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 1.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1573,
+    "avg_top_score": 0.2175
+  },
+  {
+    "alpha": 0.5,
+    "beta": 0.5,
+    "delta": 2.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1579,
+    "avg_top_score": 0.2098
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 0.3,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1191,
+    "avg_top_score": 0.2247
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 0.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1323,
+    "avg_top_score": 0.2212
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 0.8,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1428,
+    "avg_top_score": 0.2163
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 1.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1466,
+    "avg_top_score": 0.2133
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 1.5,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1507,
+    "avg_top_score": 0.2063
+  },
+  {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "delta": 2.0,
+    "accuracy": 0.0,
+    "avg_rank": 8.67,
+    "avg_separation": 0.1512,
+    "avg_top_score": 0.2002
+  }
+]
