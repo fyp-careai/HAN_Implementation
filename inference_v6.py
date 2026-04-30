@@ -74,8 +74,10 @@ PROB_LOW             = 0.30
 PROB_HIGH            = 0.70
 
 # Neuro-symbolic fusion weights  (gnn_score * ALPHA + rule_score * BETA)
-ALPHA = 0.4
-BETA  = 0.6
+# Tuned via experiment_fusion_params.py grid search
+ALPHA = 0.3
+BETA  = 0.7
+DELTA = 0.5   # Rule-score normalization steepness: norm = rule / (DELTA + rule)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +190,65 @@ def build_rule_weights():
     return rule_weights
 
 
+# def extract_abnormal_features(lab_results: list,
+#                               test_info_path: str = TEST_INFO_PATH) -> list:
+#     """
+#     Compute ratio and z_ref for each submitted test relative to reference bounds.
+
+#     Returns
+#     -------
+#     list of dicts: {test, value, ratio, z_ref}
+#         Only tests that have reference bounds are included.
+#     """
+#     tests_df = pd.read_csv(test_info_path)
+#     tests_df.columns = tests_df.columns.str.strip()
+
+#     # Build lookup {test_name: {lower_bound, upper_bound}}
+#     ref = {}
+#     for _, row in tests_df.iterrows():
+#         name = str(row.get('test_name', '')).strip()
+#         try:
+#             lo = float(row.get('lower_bound', float('nan')))
+#             hi = float(row.get('upper_bound', float('nan')))
+#         except (TypeError, ValueError):
+#             continue
+#         if name and not (pd.isna(lo) and pd.isna(hi)):
+#             ref[name] = {'lower': lo, 'upper': hi}
+
+#     abnormal = []
+#     for res in lab_results:
+#         t_name = str(res.get('test_name', '')).strip()
+#         val = res.get('value')
+#         try:
+#             val = float(val)
+#         except (TypeError, ValueError):
+#             continue
+
+#         bounds = ref.get(t_name)
+#         if bounds is None:
+#             continue
+
+#         lo, hi = bounds['lower'], bounds['upper']
+#         ratio  = 1.0
+#         z_ref  = 0.0
+
+#         if not pd.isna(lo) and not pd.isna(hi) and hi > lo:
+#             ref_mean = (lo + hi) / 2.0
+#             ref_std  = (hi - lo) / 4.0
+#             z_ref    = (val - ref_mean) / ref_std if ref_std > 0 else 0.0
+#             ratio    = val / hi if hi > 0 else 1.0
+#         elif not pd.isna(hi) and hi > 0:
+#             ratio = val / hi
+
+#         abnormal.append({
+#             'test':  t_name,
+#             'value': val,
+#             'ratio': ratio,
+#             'z_ref': z_ref,
+#         })
+
+#     return abnormal
+
 def extract_abnormal_features(lab_results: list,
                               test_info_path: str = TEST_INFO_PATH) -> list:
     """
@@ -237,6 +298,16 @@ def extract_abnormal_features(lab_results: list,
             ratio    = val / hi if hi > 0 else 1.0
         elif not pd.isna(hi) and hi > 0:
             ratio = val / hi
+
+        # Only include tests that fall outside the normal reference range
+        is_abnormal = False
+        if not pd.isna(lo) and val < lo:
+            is_abnormal = True
+        if not pd.isna(hi) and val > hi:
+            is_abnormal = True
+
+        if not is_abnormal:
+            continue
 
         abnormal.append({
             'test':  t_name,
@@ -333,15 +404,15 @@ def determine_severity(final_score, abnormal_features):
 
     # CRITICAL conditions
     if final_score >= 1.5 or max_z >= 3:
-        return "CRITICAL", "🚨"
+        return "CRITICAL", "c"
 
     # WARNING conditions
     elif final_score >= 1.0 or max_z >= 2:
-        return "WARNING", "⚠️"
+        return "WARNING", "w"
 
     # INFO conditions
     elif final_score >= 0.5:
-        return "INFO", "ℹ️"
+        return "INFO", "i"
 
     else:
         return None, None
@@ -570,12 +641,24 @@ def predict_new_patient_v6(
                   f"ratio={f['ratio']:.2f}  z_ref={f['z_ref']:.2f}")
 
     # Fuse GNN link score with rule score
-    # final_score = ALPHA * gnn_link_score + BETA * rule_score
+    # GNN score is already in [0, 1] (sigmoid output).
+    # Rule score is in [0, ∞) — normalise it to [0, 1) using saturation:
+    #     norm_rule = rule / (1 + rule)
+    # This gives:  rule=0 → 0,  rule=1 → 0.5,  rule=3 → 0.75,  rule→∞ → 1
+    # After normalisation:  final_score = ALPHA*gnn + BETA*norm_rule  ∈ [0, 1]
+    # This is directly interpretable as a probability — no sigmoid needed.
+    #
+    # If rule_score == 0 (no abnormal lab evidence), zero out the final score
+    # entirely — GNN-only predictions without rule-based backing are omitted.
     final_scores = {}
     for d in disease_order:
         gnn  = float(disease_probs.get(d, 0.0))
         rule = float(rule_scores.get(d, 0.0))
-        final_scores[d] = ALPHA * gnn + BETA * rule
+        if rule == 0.0:
+            final_scores[d] = 0.0
+        else:
+            norm_rule = rule / (DELTA + rule)  # Rational normalization [0,1]
+            final_scores[d] = ALPHA * gnn + BETA * norm_rule
 
     # ── Ranked by final (fused) score ─────────────────────────────────────────
     ranked_links = sorted(
