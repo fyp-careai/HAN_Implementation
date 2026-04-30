@@ -42,7 +42,7 @@ import torch
 from datetime import datetime
 
 # ── HAN package ───────────────────────────────────────────────────────────────
-from HAN import MedicalGraphData, HANPP_Disease
+from HAN import MedicalGraphData, HANPP_Disease, HANPP_LinkPredict
 from HAN.inductive import inductive_predict
 from HAN.test_recommender import load_test_reference, recommend_all, format_patient_json
 
@@ -353,37 +353,45 @@ def compute_rule_score(abnormal_features: list, rule_weights: dict) -> dict:
 # 2. Model loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_model(checkpoint_path: str) -> HANPP_Disease:
+def load_model(checkpoint_path: str):
     """
-    Reconstruct HANPP_Disease exactly from the saved checkpoint.
+    Reconstruct model from saved checkpoint.
 
-    Architecture inferred from checkpoint tensor shapes:
-      project.weight       [256, 120]  → in_dim=120, hidden_dim=256
-      out_proj.weight      [128, 256]  → out_dim=128
-      disease_classifier   [9, 128]    → num_diseases=9
-      node_atts count = 2             → P-D-P, P-O-P
+    Auto-detects model type:
+      - HANPP_LinkPredict: checkpoint contains 'disease_embeddings.weight'
+      - HANPP_Disease:     checkpoint contains 'disease_classifier.weight'
     """
     ck = torch.load(checkpoint_path, map_location='cpu')
 
-    in_dim       = ck['project.weight'].shape[1]        # 120
-    hidden_dim   = ck['project.weight'].shape[0]        # 256
-    out_dim      = ck['out_proj.weight'].shape[0]       # 128
-    num_diseases = ck['disease_classifier.weight'].shape[0]  # 9
-    num_atts     = sum(1 for k in ck if k.startswith('node_atts.') and k.endswith('.a_l'))
-    metapaths    = METAPATH_NAMES[:num_atts]
+    in_dim     = ck['project.weight'].shape[1]
+    hidden_dim = ck['project.weight'].shape[0]
+    out_dim    = ck['out_proj.weight'].shape[0]
+    num_atts   = sum(1 for k in ck if k.startswith('node_atts.') and k.endswith('.a_l'))
+    metapaths  = METAPATH_NAMES[:num_atts]
 
-    print(f"  Architecture: in={in_dim}, hidden={hidden_dim}, out={out_dim}, "
-          f"diseases={num_diseases}, metapaths={metapaths}")
+    is_link_predict = 'disease_embeddings.weight' in ck
 
-    model = HANPP_Disease(
-        in_dim=in_dim,
-        hidden_dim=hidden_dim,
-        out_dim=out_dim,
-        metapath_names=metapaths,
-        num_heads=4,
-        num_diseases=num_diseases,
-        dropout=0.3,
-    )
+    if is_link_predict:
+        num_diseases = ck['disease_embeddings.weight'].shape[0]
+        print(f"  Model type: HANPP_LinkPredict (contrastive)")
+        print(f"  Architecture: in={in_dim}, hidden={hidden_dim}, out={out_dim}, "
+              f"diseases={num_diseases}, metapaths={metapaths}")
+        model = HANPP_LinkPredict(
+            in_dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim,
+            metapath_names=metapaths, num_heads=4,
+            num_diseases=num_diseases, dropout=0.3,
+        )
+    else:
+        num_diseases = ck['disease_classifier.weight'].shape[0]
+        print(f"  Model type: HANPP_Disease (BCE)")
+        print(f"  Architecture: in={in_dim}, hidden={hidden_dim}, out={out_dim}, "
+              f"diseases={num_diseases}, metapaths={metapaths}")
+        model = HANPP_Disease(
+            in_dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim,
+            metapath_names=metapaths, num_heads=4,
+            num_diseases=num_diseases, dropout=0.3,
+        )
+
     model.load_state_dict(ck)
     model.to(DEVICE)
     model.eval()

@@ -290,3 +290,125 @@ class HGT_HAN(nn.Module):
         organ_scores = torch.sigmoid(self.organ_regression(z))  # [N, num_organs]
         
         return organ_logits, organ_scores, z, beta
+
+
+class HANPP_LinkPredict(nn.Module):
+    """
+    HAN++ with Contrastive Link Prediction head.
+
+    Architecture change vs HANPP_Disease:
+    ─────────────────────────────────────────────────────────────────────
+    HANPP_Disease:     z_patient → nn.Linear(128, 9) → sigmoid → probs
+    HANPP_LinkPredict: z_patient → L2 normalize ─┐
+                                                  ├→ cosine similarity / τ
+                       disease_embeddings → L2 normalize ─┘
+    ─────────────────────────────────────────────────────────────────────
+
+    Both patients and diseases are embedded in the same vector space.
+    The link score is the cosine similarity scaled by a learnable
+    temperature τ:
+
+        score(patient_i, disease_d) = cos(z_i, e_d) / τ
+
+    Trained with InfoNCE contrastive loss (multi-positive softmax),
+    which pushes positive disease embeddings closer to their patients
+    and negative disease embeddings further away.
+
+    The temperature τ is learnable (as in CLIP). The model stores
+    log(1/τ) as a parameter and clamps it to prevent instability.
+
+    Args:
+        in_dim:         input feature dimension
+        hidden_dim:     hidden layer dimension
+        out_dim:        output embedding dimension (shared patient-disease space)
+        metapath_names: list of meta-path names to use
+        num_heads:      number of attention heads
+        num_diseases:   number of disease nodes in the graph
+        dropout:        dropout rate
+        init_temperature: initial temperature τ (default 0.07, same as CLIP)
+    """
+
+    def __init__(self, in_dim, hidden_dim, out_dim, metapath_names,
+                 num_heads=4, num_diseases=9, dropout=0.3, init_temperature=0.07):
+        super().__init__()
+        self.metapath_names = metapath_names
+        self.num_diseases = num_diseases
+
+        # ── Encoder (identical to HANPP_Disease) ─────────────────────────────
+        self.project = nn.Linear(in_dim, hidden_dim)
+
+        self.node_atts = nn.ModuleList([
+            NodeLevelAttentionImproved(hidden_dim, hidden_dim,
+                                       num_heads=num_heads, dropout=dropout)
+            for _ in metapath_names
+        ])
+
+        self.semantic_att = PatientConditionedSemanticAttention(
+            hidden_dim, dropout=dropout
+        )
+
+        self.out_proj = nn.Linear(hidden_dim, out_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        # ── Link Prediction head (NEW) ───────────────────────────────────────
+        # Learnable disease embeddings in the same space as patient embeddings
+        self.disease_embeddings = nn.Embedding(num_diseases, out_dim)
+        nn.init.xavier_uniform_(self.disease_embeddings.weight)
+
+        # Learnable log-temperature: τ = exp(-log_temp)
+        # Initialized to CLIP default: τ = 0.07 → log(1/τ) ≈ 2.66
+        import math
+        self.log_temperature = nn.Parameter(
+            torch.tensor(math.log(1.0 / init_temperature))
+        )
+
+    @property
+    def temperature(self):
+        """Current temperature τ (clamped for numerical stability)."""
+        # Clamp log_temp to prevent τ from being too small (< 0.01) or too large (> 1.0)
+        return torch.exp(-self.log_temperature.clamp(min=0.0, max=4.6))
+
+    def set_vectorized_neighbors(self, neighbor_tensors):
+        """Pre-set padded neighbor tensors for vectorized attention."""
+        for i, name in enumerate(self.metapath_names):
+            if name in neighbor_tensors:
+                idx, mask = neighbor_tensors[name]
+                self.node_atts[i].set_neighbors(idx, mask)
+
+    def forward(self, patient_feats, patient_neighbor_dicts):
+        """
+        Forward pass.
+
+        Args:
+            patient_feats: [N, in_dim]
+            patient_neighbor_dicts: dict of {metapath_name: neighbor_dict}
+
+        Returns:
+            scores:  [N, num_diseases]  cosine similarity / τ (use with InfoNCE loss)
+            z:       [N, out_dim]       patient embeddings (unnormalized, for prototypes)
+            beta:    [N, num_metapaths] per-patient meta-path attention weights
+        """
+        # ── Encoder (identical forward path) ─────────────────────────────────
+        h = F.gelu(self.project(patient_feats))
+
+        Zs = []
+        for i, name in enumerate(self.metapath_names):
+            neigh = patient_neighbor_dicts[name]
+            Zs.append(self.node_atts[i](h, neigh))
+
+        Z_final, beta = self.semantic_att(Zs, h_patient=h)
+        z = F.gelu(self.out_proj(Z_final))          # [N, out_dim]
+
+        # ── Link Prediction scoring ──────────────────────────────────────────
+        # L2 normalize both patient and disease embeddings for cosine similarity
+        z_norm = F.normalize(self.dropout(z), dim=-1)                   # [N, out_dim]
+        d_norm = F.normalize(self.disease_embeddings.weight, dim=-1)    # [D, out_dim]
+
+        # Cosine similarity scaled by learnable temperature
+        scores = z_norm @ d_norm.T / self.temperature  # [N, D]
+
+        return scores, z, beta
+
+    def get_disease_embeddings(self):
+        """Return L2-normalized disease embeddings for analysis/visualization."""
+        return F.normalize(self.disease_embeddings.weight.detach(), dim=-1)

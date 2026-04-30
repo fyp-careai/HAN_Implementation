@@ -13,7 +13,13 @@ from .conv import (
 from .model import (
     HANPP,
     HANPP_Disease,
-    HGT_HAN
+    HGT_HAN,
+    HANPP_LinkPredict
+)
+
+from .losses import (
+    InfoNCELinkLoss,
+    MarginLinkLoss
 )
 
 from .data import (
@@ -86,6 +92,11 @@ __all__ = [
     'HANPP',
     'HANPP_Disease',
     'HGT_HAN',
+    'HANPP_LinkPredict',
+
+    # Losses
+    'InfoNCELinkLoss',
+    'MarginLinkLoss',
     
     # Data
     'MedicalGraphData',
