@@ -1,0 +1,11 @@
+{
+  "Anemia": 0.1,
+  "CKD": 0.15,
+  "Diabetes": 0.6,
+  "Dyslipidemia": 0.2,
+  "Electrolyte_Imbalance": 0.2,
+  "Hematology_Disorder": 0.65,
+  "Infection_Inflammation": 0.1,
+  "Liver_Disease": 0.2,
+  "Thyroid_Disorder": 0.25
+}
