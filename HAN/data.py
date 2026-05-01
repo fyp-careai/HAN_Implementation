@@ -438,7 +438,8 @@ class MedicalGraphData:
                     )
                     print(f"Added metapath {name} with nnz {M.nnz}")
                 else:
-                    print(f"Skipped metapath {name} due to nnz {M.nnz}")
+                    patient_metapath_neighbors[name] = {}
+                    print(f"Skipped metapath {name} due to nnz {M.nnz} — using empty neighbors")
         
         self.metapath_matrices = patient_metapath_neighbors
         return patient_metapath_neighbors

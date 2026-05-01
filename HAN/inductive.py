@@ -88,13 +88,17 @@ def build_disease_prototypes(model, feats_t, labels_np, disease_order, device,
     """
     model.eval()
     feats_t = feats_t.to(device)
+    N = feats_t.shape[0]
+    batch_size = 2048
 
-    # Empty neighbour dicts → MLP mode (we only need embeddings z, not logits)
-    empty_nbr = {name: {} for name in model.metapath_names}
-
-    # Forward pass to get embeddings z for all patients
-    _, z, _ = model(feats_t, empty_nbr)
-    z_np = z.cpu().numpy()    # [N, out_dim]
+    # Batched forward to get embeddings z for all patients (avoids OOM)
+    all_z = []
+    for start in range(0, N, batch_size):
+        batch_idx = torch.arange(start, min(start + batch_size, N), device=device)
+        _, _, z_b, _ = model.forward_batch(feats_t, batch_idx)
+        all_z.append(z_b.cpu())
+    z = torch.cat(all_z, dim=0)              # [N, out_dim]
+    z_np = z.numpy()
 
     prototypes = {}
     coverage   = {}
@@ -156,10 +160,17 @@ def build_organ_prototypes(model, feats_t, patient_organ_score, organ_map, devic
     """
     model.eval()
     feats_t = feats_t.to(device)
+    N = feats_t.shape[0]
+    batch_size = 2048
 
-    empty_nbr = {name: {} for name in model.metapath_names}
-    _, z, _ = model(feats_t, empty_nbr)
-    z_np = z.cpu().numpy()    # [N, out_dim]
+    # Batched forward to get embeddings z for all patients (avoids OOM)
+    all_z = []
+    for start in range(0, N, batch_size):
+        batch_idx = torch.arange(start, min(start + batch_size, N), device=device)
+        _, _, z_b, _ = model.forward_batch(feats_t, batch_idx)
+        all_z.append(z_b.cpu())
+    z = torch.cat(all_z, dim=0)              # [N, out_dim]
+    z_np = z.numpy()
 
     SCORE_THRESH = 0.10
     organ_prototypes = {}
@@ -361,7 +372,7 @@ def inductive_predict(model,
     model.eval()
     empty_nbr = {name: {} for name in model.metapath_names}
     with _no_precomputed_neighbors(model):
-        _, z_new, _ = model(feats_t, empty_nbr)
+        _, _, z_new, _ = model(feats_t, empty_nbr)
     z_new_single = z_new[0]    # [out_dim]
 
     # ── Step 2: Build approximate neighbours ─────────────────────────────────
@@ -436,7 +447,7 @@ def inductive_predict(model,
 
     with _no_precomputed_neighbors(model), torch.no_grad():
         for _ in range(n_mc_samples):
-            logits, _, _ = model(mini_feats_t, mini_nbr)
+            _, logits, _, _ = model(mini_feats_t, mini_nbr)
             prob = torch.sigmoid(logits[0])    # [num_diseases]
             all_probs.append(prob.cpu())
 
@@ -537,7 +548,7 @@ def compare_inference_modes(model, feats_np, labels_np, test_indices,
                 probs_list = []
                 with torch.no_grad():
                     for _ in range(n_mc_samples):
-                        logits, _, _ = model(feats_full_t, empty)
+                        _, logits, _, _ = model(feats_full_t, empty)
                         probs_list.append(torch.sigmoid(logits[pidx]).cpu())
                 model.eval()
                 mean_p = torch.stack(probs_list).mean(0).numpy()
@@ -567,7 +578,7 @@ def compare_inference_modes(model, feats_np, labels_np, test_indices,
                 # Disable pre-set neighbors: single-patient tensor is out of bounds
                 with _no_precomputed_neighbors(model), torch.no_grad():
                     for _ in range(n_mc_samples):
-                        logits, _, _ = model(feats_t, empty)
+                        _, logits, _, _ = model(feats_t, empty)
                         probs_list.append(torch.sigmoid(logits[0]).cpu())
                 model.eval()
                 mean_p = torch.stack(probs_list).mean(0).numpy()

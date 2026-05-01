@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-train.py — HANPP_LinkPredict GPU Training Script (Contrastive Link Prediction)
+train.py — HANPP_LinkPredict GPU Training Script (Hybrid Contrastive + Classification)
 ================================================================================
 
-Trains the HANPP_LinkPredict model with InfoNCE contrastive loss.
-Patients and diseases are embedded in a shared vector space, and link scores
-are computed via cosine similarity scaled by a learnable temperature τ.
+Trains the HANPP_LinkPredict model with a hybrid loss:
+  - InfoNCE contrastive loss for embedding geometry
+  - BCEWithLogitsLoss for calibrated disease probabilities
+
+Patients and diseases are embedded in a shared vector space. The classification
+head produces calibrated probabilities for downstream inference.
 
 Usage:
     python train.py
     python train.py --epochs 200 --lr 0.002 --hidden_dim 512
 """
 
-import os, sys, json, time, argparse, pickle, math
+import os, sys, json, time, argparse, pickle, math, random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -36,11 +39,14 @@ DEFAULTS = {
     'nnz_threshold': 80_000_000,
     'metapaths': ['P-D-P', 'P-O-P'],
     'hidden_dim': 256, 'out_dim': 128, 'num_heads': 4, 'dropout': 0.4,
+    'batch_size': 2048,
     'init_temperature': 0.07,
     'epochs': 150, 'lr': 0.001, 'weight_decay': 1e-4,
     'hard_neg_weight': 1.0,
+    'alpha_contrastive': 0.5, 'alpha_classify': 0.5,
     'patience': 20, 'lr_patience': 10, 'lr_factor': 0.5, 'min_lr': 1e-6,
     'eval_every': 1, 'mc_samples': 50,
+    'skip_training': False,
 }
 
 def parse_args():
@@ -48,6 +54,8 @@ def parse_args():
     for key, val in DEFAULTS.items():
         if isinstance(val, list):
             parser.add_argument(f'--{key}', nargs='+', default=val)
+        elif isinstance(val, bool):
+            parser.add_argument(f'--{key}', action='store_true' if not val else 'store_false')
         else:
             parser.add_argument(f'--{key}', type=type(val), default=val)
     return parser.parse_args()
@@ -70,30 +78,60 @@ def stratified_split(labels_np, train_ratio, val_ratio, seed):
 
 
 @torch.no_grad()
-def evaluate(model, feats_t, labels_t, idx, disease_order, criterion, device):
+def evaluate(model, feats_t, labels_t, idx, disease_order, criterion_link,
+            criterion_cls, alpha_c, alpha_cls, device, batch_size=2048):
+    """Memory-efficient batched evaluation using classification logits."""
     model.eval()
-    empty_nbr = {name: {} for name in model.metapath_names}
-    scores, z, beta = model(feats_t, empty_nbr)
-    loss = criterion(scores[idx], labels_t[idx]).item()
-    probs = torch.sigmoid(scores[idx]).cpu().numpy()
+    idx_t = torch.tensor(idx, device=device, dtype=torch.long)
+    all_scores = []
+    all_logits = []
+    all_betas = []
+
+    for start in range(0, len(idx), batch_size):
+        batch_idx = idx_t[start:start + batch_size]
+        scores_b, logits_b, _, beta_b = model.forward_batch(feats_t, batch_idx)
+        all_scores.append(scores_b)
+        all_logits.append(logits_b)
+        all_betas.append(beta_b)
+
+    scores = torch.cat(all_scores, dim=0)      # [len(idx), D]
+    logits = torch.cat(all_logits, dim=0)      # [len(idx), D]
+    betas = torch.cat(all_betas, dim=0)        # [len(idx), K]
+    labels_sub = labels_t[idx_t]
+
+    link_loss = criterion_link(scores, labels_sub).item()
+    cls_loss = criterion_cls(logits, labels_sub).item()
+    loss = alpha_c * link_loss + alpha_cls * cls_loss
+
+    # Use classification logits for F1 (calibrated probabilities)
+    probs = torch.sigmoid(logits).cpu().numpy()
     preds = (probs > 0.5).astype(int)
-    y_true = labels_t[idx].cpu().numpy().astype(int)
+    y_true = labels_sub.cpu().numpy().astype(int)
     macro_f1 = f1_score(y_true, preds, average='macro', zero_division=0)
     micro_f1 = f1_score(y_true, preds, average='micro', zero_division=0)
     per_disease = {d: f1_score(y_true[:,j], preds[:,j], zero_division=0)
                    for j, d in enumerate(disease_order)}
-    beta_mean = beta[idx].mean(dim=0).cpu().numpy()
-    return {'loss': loss, 'macro_f1': macro_f1, 'micro_f1': micro_f1,
+    beta_mean = betas.mean(dim=0).cpu().numpy()
+    return {'loss': loss, 'link_loss': link_loss, 'cls_loss': cls_loss,
+            'macro_f1': macro_f1, 'micro_f1': micro_f1,
             'per_disease': per_disease, 'beta_mean': beta_mean}
 
 
 @torch.no_grad()
-def find_optimal_thresholds(model, feats_t, labels_t, idx, disease_order, device):
+def find_optimal_thresholds(model, feats_t, labels_t, idx, disease_order, device, batch_size=2048):
+    """Memory-efficient batched threshold search using classification logits."""
     model.eval()
-    empty_nbr = {name: {} for name in model.metapath_names}
-    scores, _, _ = model(feats_t, empty_nbr)
-    probs = torch.sigmoid(scores[idx]).cpu().numpy()
-    y_true = labels_t[idx].cpu().numpy().astype(int)
+    idx_t = torch.tensor(idx, device=device, dtype=torch.long)
+    all_logits = []
+
+    for start in range(0, len(idx), batch_size):
+        batch_idx = idx_t[start:start + batch_size]
+        _, logits_b, _, _ = model.forward_batch(feats_t, batch_idx)
+        all_logits.append(logits_b)
+
+    logits = torch.cat(all_logits, dim=0)
+    probs = torch.sigmoid(logits).cpu().numpy()
+    y_true = labels_t[idx_t].cpu().numpy().astype(int)
     thresholds = {}
     for j, d in enumerate(disease_order):
         best_f1, best_t = 0.0, 0.5
@@ -111,7 +149,7 @@ def train(args):
     print(f"  Device: {device}")
     if device.type == 'cuda':
         print(f"  GPU:    {torch.cuda.get_device_name(0)}")
-        print(f"  VRAM:   {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
+        print(f"  VRAM:   {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
     print(f"{'='*70}\n")
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -163,79 +201,127 @@ def train(args):
     print(f"  Parameters: {total_params:,}")
 
     # ── 5. Training setup ────────────────────────────────────────────────────
-    criterion = InfoNCELinkLoss(hard_neg_weight=args.hard_neg_weight)
+    criterion_link = InfoNCELinkLoss(hard_neg_weight=args.hard_neg_weight)
+    criterion_cls = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=args.lr_factor,
-        patience=args.lr_patience, min_lr=args.min_lr, verbose=True)
+        patience=args.lr_patience, min_lr=args.min_lr)
 
-    print(f"\n  Loss:      InfoNCE (hard_neg_weight={args.hard_neg_weight})")
+    alpha_c = args.alpha_contrastive
+    alpha_cls = args.alpha_classify
+
+    print(f"\n  Loss:      Hybrid (InfoNCE×{alpha_c} + BCE×{alpha_cls})")
+    print(f"  InfoNCE:   hard_neg_weight={args.hard_neg_weight}")
     print(f"  Optimizer: AdamW (lr={args.lr}, wd={args.weight_decay})")
+    print(f"  Batch size: {args.batch_size}")
     print(f"  Early stopping: patience={args.patience}")
 
     # ── 6. Training loop ─────────────────────────────────────────────────────
     print(f"\n[5/7] Training for up to {args.epochs} epochs ...\n")
 
     best_val_loss, best_val_f1, best_epoch, patience_count = float('inf'), 0.0, 0, 0
-    hist = {'train_loss': [], 'val_loss': [], 'val_macro_f1': [], 'val_micro_f1': [],
+    hist = {'train_loss': [], 'train_link_loss': [], 'train_cls_loss': [],
+            'val_loss': [], 'val_link_loss': [], 'val_cls_loss': [],
+            'val_macro_f1': [], 'val_micro_f1': [],
             'val_mean_f1': [], 'lr': [], 'temperature': []}
     best_model_path = os.path.join(args.output_dir, 'hanpp_linkpredict_best.pt')
     t_start = time.time()
 
-    for epoch in range(1, args.epochs + 1):
-        t0 = time.time()
-        model.train()
-        optimizer.zero_grad()
+    # Pre-compute train indices as tensor for mini-batch sampling
+    train_idx_np = np.array(train_idx)
+    num_batches = math.ceil(len(train_idx) / args.batch_size)
+    print(f"  Mini-batches per epoch: {num_batches} (batch_size={args.batch_size})\n")
 
-        scores, z, beta = model(feats_t, neighbor_dicts)
-        train_loss = criterion(scores[train_idx], labels_t[train_idx])
-        train_loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step()
+    if not args.skip_training:
+        for epoch in range(1, args.epochs + 1):
+            t0 = time.time()
+            model.train()
 
-        tl = train_loss.item()
-        hist['train_loss'].append(tl)
-        hist['lr'].append(optimizer.param_groups[0]['lr'])
-        hist['temperature'].append(float(model.temperature.detach().cpu()))
+            # Shuffle training indices each epoch
+            np.random.shuffle(train_idx_np)
+            epoch_loss = 0.0
+            epoch_link_loss = 0.0
+            epoch_cls_loss = 0.0
 
-        if epoch % args.eval_every == 0 or epoch == 1:
-            vm = evaluate(model, feats_t, labels_t, val_idx, disease_order, criterion, device)
-            vl, vf1_ma, vf1_mi = vm['loss'], vm['macro_f1'], vm['micro_f1']
-            vf1_mean = (vf1_ma + vf1_mi) / 2
-            hist['val_loss'].append(vl)
-            hist['val_macro_f1'].append(vf1_ma)
-            hist['val_micro_f1'].append(vf1_mi)
-            hist['val_mean_f1'].append(vf1_mean)
-            scheduler.step(vl)
+            for b in range(num_batches):
+                batch_np = train_idx_np[b * args.batch_size : (b + 1) * args.batch_size]
+                batch_idx = torch.tensor(batch_np, device=device, dtype=torch.long)
 
-            improved = ""
-            if vl < best_val_loss:
-                best_val_loss, best_val_f1, best_epoch, patience_count = vl, vf1_ma, epoch, 0
-                torch.save(model.state_dict(), best_model_path)
-                improved = " ✅ saved"
+                optimizer.zero_grad()
+                scores, logits, z, beta = model.forward_batch(feats_t, batch_idx)
+                batch_labels = labels_t[batch_idx]
+
+                link_loss = criterion_link(scores, batch_labels)
+                cls_loss = criterion_cls(logits, batch_labels)
+                loss = alpha_c * link_loss + alpha_cls * cls_loss
+
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+                epoch_link_loss += link_loss.item()
+                epoch_cls_loss += cls_loss.item()
+
+            tl = epoch_loss / num_batches
+            tl_link = epoch_link_loss / num_batches
+            tl_cls = epoch_cls_loss / num_batches
+            hist['train_loss'].append(tl)
+            hist['train_link_loss'].append(tl_link)
+            hist['train_cls_loss'].append(tl_cls)
+            hist['lr'].append(optimizer.param_groups[0]['lr'])
+            hist['temperature'].append(float(model.temperature.detach().cpu()))
+
+            if epoch % args.eval_every == 0 or epoch == 1:
+                vm = evaluate(model, feats_t, labels_t, val_idx, disease_order,
+                              criterion_link, criterion_cls, alpha_c, alpha_cls,
+                              device, batch_size=args.batch_size)
+                vl, vf1_ma, vf1_mi = vm['loss'], vm['macro_f1'], vm['micro_f1']
+                vf1_mean = (vf1_ma + vf1_mi) / 2
+                hist['val_loss'].append(vl)
+                hist['val_link_loss'].append(vm['link_loss'])
+                hist['val_cls_loss'].append(vm['cls_loss'])
+                hist['val_macro_f1'].append(vf1_ma)
+                hist['val_micro_f1'].append(vf1_mi)
+                hist['val_mean_f1'].append(vf1_mean)
+                scheduler.step(vl)
+
+                improved = ""
+                if vl < best_val_loss:
+                    best_val_loss, best_val_f1, best_epoch, patience_count = vl, vf1_ma, epoch, 0
+                    torch.save(model.state_dict(), best_model_path)
+                    improved = " ✅ saved"
+                else:
+                    patience_count += 1
+
+                tau = float(model.temperature.detach().cpu())
+                lr_now = optimizer.param_groups[0]['lr']
+                print(f"  Epoch {epoch:>4}/{args.epochs}  "
+                      f"loss={tl:.4f}(link={tl_link:.4f} cls={tl_cls:.4f})  "
+                      f"val={vl:.4f}  "
+                      f"F1(ma={vf1_ma:.4f} mi={vf1_mi:.4f})  "
+                      f"τ={tau:.4f}  lr={lr_now:.1e}{improved}")
+
+                if epoch % 10 == 0:
+                    for d, f1 in vm['per_disease'].items():
+                        print(f"           {d:<30} F1={f1:.4f}")
+
+                if patience_count >= args.patience:
+                    print(f"\n  ⚠ Early stopping at epoch {epoch}")
+                    break
             else:
-                patience_count += 1
+                print(f"  Epoch {epoch:>4}/{args.epochs}  "
+                      f"loss={tl:.4f}(link={tl_link:.4f} cls={tl_cls:.4f})  [{time.time()-t0:.1f}s]")
 
-            tau = float(model.temperature.detach().cpu())
-            lr_now = optimizer.param_groups[0]['lr']
-            print(f"  Epoch {epoch:>4}/{args.epochs}  "
-                  f"train={tl:.4f}  val={vl:.4f}  "
-                  f"F1(ma={vf1_ma:.4f} mi={vf1_mi:.4f})  "
-                  f"τ={tau:.4f}  lr={lr_now:.1e}{improved}")
-
-            if epoch % 10 == 0:
-                for d, f1 in vm['per_disease'].items():
-                    print(f"           {d:<30} F1={f1:.4f}")
-
-            if patience_count >= args.patience:
-                print(f"\n  ⚠ Early stopping at epoch {epoch}")
-                break
-        else:
-            print(f"  Epoch {epoch:>4}/{args.epochs}  train={tl:.4f}  [{time.time()-t0:.1f}s]")
-
-    total_time = time.time() - t_start
-    print(f"\n  Training complete in {total_time/60:.1f} min")
-    print(f"  Best epoch: {best_epoch}  (val_loss={best_val_loss:.4f}, F1={best_val_f1:.4f})")
+            total_time = time.time() - t_start
+            print(f"\n  Training complete in {total_time/60:.1f} min")
+            print(f"  Best epoch: {best_epoch}  (val_loss={best_val_loss:.4f}, F1={best_val_f1:.4f})")
+    else:
+        print(f"\n  Skipping training phase. Loading best model from disk...")
+        total_time = 0
+        best_epoch = 'N/A'
+        best_val_loss = 'N/A'
+        best_val_f1 = 'N/A'
 
     # ── 7. Post-training ─────────────────────────────────────────────────────
     print(f"\n[6/7] Post-training evaluation & prototype generation ...")
@@ -243,14 +329,17 @@ def train(args):
     model.eval()
 
     # Test evaluation
-    test_m = evaluate(model, feats_t, labels_t, test_idx, disease_order, criterion, device)
+    test_m = evaluate(model, feats_t, labels_t, test_idx, disease_order,
+                      criterion_link, criterion_cls, alpha_c, alpha_cls,
+                      device, batch_size=args.batch_size)
     print(f"\n  === Test Set ===")
     print(f"  Loss: {test_m['loss']:.4f}  Macro-F1: {test_m['macro_f1']:.4f}  Micro-F1: {test_m['micro_f1']:.4f}")
     for d, f1 in test_m['per_disease'].items():
         print(f"    {d:<35} F1={f1:.4f}")
 
     # Optimal thresholds
-    opt_thresholds = find_optimal_thresholds(model, feats_t, labels_t, val_idx, disease_order, device)
+    opt_thresholds = find_optimal_thresholds(model, feats_t, labels_t, val_idx,
+                                              disease_order, device, batch_size=args.batch_size)
     thresh_path = os.path.join(args.output_dir, 'opt_thresholds.json')
     with open(thresh_path, 'w') as f: json.dump(opt_thresholds, f, indent=2)
     print(f"\n  Thresholds: {opt_thresholds}")

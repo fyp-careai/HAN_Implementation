@@ -294,28 +294,23 @@ class HGT_HAN(nn.Module):
 
 class HANPP_LinkPredict(nn.Module):
     """
-    HAN++ with Contrastive Link Prediction head.
+    HAN++ with Hybrid Contrastive + Classification head.
 
-    Architecture change vs HANPP_Disease:
+    Dual-head architecture:
     ─────────────────────────────────────────────────────────────────────
-    HANPP_Disease:     z_patient → nn.Linear(128, 9) → sigmoid → probs
-    HANPP_LinkPredict: z_patient → L2 normalize ─┐
-                                                  ├→ cosine similarity / τ
-                       disease_embeddings → L2 normalize ─┘
+    Contrastive head:    z_patient → L2 normalize ─┐
+                                                    ├→ cosine similarity / τ
+                         disease_embeddings → L2 normalize ─┘
+
+    Classification head: z_patient → nn.Linear(out_dim, num_diseases) → logits
     ─────────────────────────────────────────────────────────────────────
 
-    Both patients and diseases are embedded in the same vector space.
-    The link score is the cosine similarity scaled by a learnable
-    temperature τ:
+    The contrastive head learns a rich embedding geometry (InfoNCE loss),
+    while the classification head produces calibrated disease probabilities
+    (BCEWithLogitsLoss with optional focal loss for class imbalance).
 
-        score(patient_i, disease_d) = cos(z_i, e_d) / τ
-
-    Trained with InfoNCE contrastive loss (multi-positive softmax),
-    which pushes positive disease embeddings closer to their patients
-    and negative disease embeddings further away.
-
-    The temperature τ is learnable (as in CLIP). The model stores
-    log(1/τ) as a parameter and clamps it to prevent instability.
+    Both heads share the same patient encoder (HAN++ backbone).
+    Training uses a weighted sum of both losses.
 
     Args:
         in_dim:         input feature dimension
@@ -350,7 +345,7 @@ class HANPP_LinkPredict(nn.Module):
         self.out_proj = nn.Linear(hidden_dim, out_dim)
         self.dropout = nn.Dropout(dropout)
 
-        # ── Link Prediction head (NEW) ───────────────────────────────────────
+        # ── Contrastive Link Prediction head ─────────────────────────────────
         # Learnable disease embeddings in the same space as patient embeddings
         self.disease_embeddings = nn.Embedding(num_diseases, out_dim)
         nn.init.xavier_uniform_(self.disease_embeddings.weight)
@@ -361,6 +356,10 @@ class HANPP_LinkPredict(nn.Module):
         self.log_temperature = nn.Parameter(
             torch.tensor(math.log(1.0 / init_temperature))
         )
+
+        # ── Classification head ──────────────────────────────────────────────
+        # Direct multi-label classifier for calibrated disease probabilities
+        self.classifier = nn.Linear(out_dim, num_diseases)
 
     @property
     def temperature(self):
@@ -384,7 +383,8 @@ class HANPP_LinkPredict(nn.Module):
             patient_neighbor_dicts: dict of {metapath_name: neighbor_dict}
 
         Returns:
-            scores:  [N, num_diseases]  cosine similarity / τ (use with InfoNCE loss)
+            scores:  [N, num_diseases]  cosine similarity / τ (contrastive head)
+            logits:  [N, num_diseases]  raw classification logits (classification head)
             z:       [N, out_dim]       patient embeddings (unnormalized, for prototypes)
             beta:    [N, num_metapaths] per-patient meta-path attention weights
         """
@@ -399,15 +399,57 @@ class HANPP_LinkPredict(nn.Module):
         Z_final, beta = self.semantic_att(Zs, h_patient=h)
         z = F.gelu(self.out_proj(Z_final))          # [N, out_dim]
 
-        # ── Link Prediction scoring ──────────────────────────────────────────
-        # L2 normalize both patient and disease embeddings for cosine similarity
+        # ── Contrastive Link Prediction scoring ──────────────────────────────
         z_norm = F.normalize(self.dropout(z), dim=-1)                   # [N, out_dim]
         d_norm = F.normalize(self.disease_embeddings.weight, dim=-1)    # [D, out_dim]
-
-        # Cosine similarity scaled by learnable temperature
         scores = z_norm @ d_norm.T / self.temperature  # [N, D]
 
-        return scores, z, beta
+        # ── Classification head ──────────────────────────────────────────────
+        logits = self.classifier(self.dropout(z))      # [N, D]
+
+        return scores, logits, z, beta
+
+    def forward_batch(self, patient_feats, batch_idx):
+        """
+        Mini-batch forward pass for memory-efficient training.
+
+        Computes the input projection h for ALL patients (needed for neighbor
+        lookups), but only runs the expensive attention computation for patients
+        in batch_idx.
+
+        Args:
+            patient_feats: [N, in_dim]  all patient features
+            batch_idx:     [B] tensor   indices of patients in this mini-batch
+
+        Returns:
+            scores: [B, num_diseases]  cosine similarity / τ  (contrastive head)
+            logits: [B, num_diseases]  raw classification logits (classification head)
+            z:      [B, out_dim]       patient embeddings
+            beta:   [B, num_metapaths] per-patient meta-path attention weights
+        """
+        # ── Project ALL patients (cheap linear, [N, hidden]) ─────────────────
+        h = F.gelu(self.project(patient_feats))
+
+        # ── Node attention: only compute for batch patients ──────────────────
+        Zs = []
+        for i, name in enumerate(self.metapath_names):
+            # pass batch_idx so attention is only computed for B patients
+            Zs.append(self.node_atts[i](h, batch_idx=batch_idx))
+
+        # h_patient for semantic attention is only for batch patients
+        h_batch = h[batch_idx]
+        Z_final, beta = self.semantic_att(Zs, h_patient=h_batch)
+        z = F.gelu(self.out_proj(Z_final))          # [B, out_dim]
+
+        # ── Contrastive Link Prediction scoring ──────────────────────────────
+        z_norm = F.normalize(self.dropout(z), dim=-1)
+        d_norm = F.normalize(self.disease_embeddings.weight, dim=-1)
+        scores = z_norm @ d_norm.T / self.temperature  # [B, D]
+
+        # ── Classification head ──────────────────────────────────────────────
+        logits = self.classifier(self.dropout(z))      # [B, D]
+
+        return scores, logits, z, beta
 
     def get_disease_embeddings(self):
         """Return L2-normalized disease embeddings for analysis/visualization."""

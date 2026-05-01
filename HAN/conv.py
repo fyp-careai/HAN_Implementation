@@ -55,23 +55,27 @@ class NodeLevelAttentionImproved(nn.Module):
         self.neighbor_idx = neighbor_idx
         self.neighbor_mask = neighbor_mask
     
-    def forward(self, h, neighbor_dict=None):
+    def forward(self, h, neighbor_dict=None, batch_idx=None):
         """
         Forward pass - uses pre-set neighbors if available, falls back to dict otherwise.
         
         Args:
             h: node features [N, in_dim]
             neighbor_dict: dict mapping node_id to list of neighbor_ids (optional)
+            batch_idx: optional [B] tensor of patient indices for mini-batch mode
         
         Returns:
-            Updated node features [N, out_dim]
+            Updated node features [N, out_dim] or [B, out_dim] if batch_idx given
         """
         N = h.size(0)
         h_proj = self.W(h)  # (N, out_dim)
         
         # Use vectorized path if neighbors are pre-set
         if self.neighbor_idx is not None and self.neighbor_mask is not None:
-            return self._forward_vectorized(h, h_proj)
+            if batch_idx is not None:
+                return self._forward_vectorized_batch(h, h_proj, batch_idx)
+            else:
+                return self._forward_vectorized(h, h_proj)
         else:
             # Fallback to original loop-based implementation
             return self._forward_loop(h, h_proj, neighbor_dict)
@@ -115,6 +119,61 @@ class NodeLevelAttentionImproved(nn.Module):
         
         # Residual + layernorm
         res = self.res_proj(h) if self.res_proj is not None else h_proj
+        out = F.gelu(H_cat + res)
+        out = self.layernorm(out)
+        return out
+
+    def _forward_vectorized_batch(self, h, h_proj, batch_idx):
+        """
+        Mini-batch vectorized forward: only compute attention for batch patients.
+        
+        h_proj contains ALL patient projections (needed for neighbor lookups),
+        but attention is only computed for patients in batch_idx.
+        
+        Memory: O(B * max_neighbors) instead of O(N * max_neighbors).
+        """
+        B = batch_idx.size(0)
+        N = h.size(0)
+        max_neighbors = self.neighbor_idx.size(1)
+        
+        # Reshape ALL patients for multi-head: [N, num_heads, head_dim]
+        h_heads = h_proj.view(N, self.num_heads, self.head_dim)
+        
+        # Slice neighbor indices/masks for batch patients only: [B, max_neighbors]
+        batch_nbr_idx = self.neighbor_idx[batch_idx]     # [B, max_neighbors]
+        batch_nbr_mask = self.neighbor_mask[batch_idx]   # [B, max_neighbors]
+        
+        # Gather neighbor embeddings using ALL patient embeddings: [B, max_neighbors, num_heads, head_dim]
+        neigh_h = h_heads[batch_nbr_idx]
+        
+        # Batch patient self embeddings: [B, 1, num_heads, head_dim]
+        batch_h_heads = h_heads[batch_idx]
+        self_h = batch_h_heads.unsqueeze(1).expand(-1, max_neighbors, -1, -1)
+        
+        # Attention scores
+        el = (self_h * self.a_l.view(1, 1, self.num_heads, self.head_dim)).sum(dim=3)
+        er = (neigh_h * self.a_r.view(1, 1, self.num_heads, self.head_dim)).sum(dim=3)
+        e = self.leaky(el + er)  # [B, max_neighbors, num_heads]
+        
+        # Mask invalid neighbors
+        mask_expanded = batch_nbr_mask.unsqueeze(2).expand(-1, -1, self.num_heads)
+        e = e.masked_fill(mask_expanded == 0, -1e9)
+        
+        # Softmax + dropout
+        alpha = F.softmax(e, dim=1)
+        alpha = self.dropout(alpha)
+        
+        # Weighted sum
+        alpha_expanded = alpha.unsqueeze(3)
+        out_heads = (alpha_expanded * neigh_h).sum(dim=1)  # [B, num_heads, head_dim]
+        
+        # Concatenate heads
+        H_cat = out_heads.view(B, self.out_dim)
+        
+        # Residual + layernorm (only for batch patients)
+        batch_h = h[batch_idx]
+        batch_h_proj = h_proj[batch_idx]
+        res = self.res_proj(batch_h) if self.res_proj is not None else batch_h_proj
         out = F.gelu(H_cat + res)
         out = self.layernorm(out)
         return out

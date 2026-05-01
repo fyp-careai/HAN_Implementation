@@ -52,9 +52,9 @@ from HAN.test_recommender import load_test_reference, recommend_all, format_pati
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-MODEL_PATH           = 'models_saved/careai_march/hanpp_disease_v6_PDP_POP.pt'
-PROTOTYPE_PATH       = 'models_saved/careai_march/prototypes_v6.pkl'
-ORGAN_PROTOTYPE_PATH = 'models_saved/careai_march/organ_prototypes_v6.pkl'
+MODEL_PATH           = 'models_saved/retrained/hanpp_linkpredict_best.pt'
+PROTOTYPE_PATH       = 'models_saved/retrained/prototypes.pkl'
+ORGAN_PROTOTYPE_PATH = 'models_saved/retrained/organ_prototypes.pkl'
 
 RECORDS_PATH         = 'data/HAN_data/merged_coop_ruhunu_patient_data.csv'
 SYMPTOM_PATH         = 'data/HAN_data/patient_disease_ground_truth_long.csv'
