@@ -78,6 +78,7 @@ PROB_HIGH            = 0.70
 ALPHA = 0.3
 BETA  = 0.7
 DELTA = 0.4   # Rule-score normalization steepness: norm = rule / (DELTA + rule)
+GNN_FLOOR = 0.15  # Minimum GNN weight when rule_score==0 (dampened, not zeroed)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -390,6 +391,70 @@ def load_model(checkpoint_path: str) -> HANPP_Disease:
     return model
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2b. Per-disease threshold calibration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calibrate_thresholds(model, feats_np, labels_np, disease_order, device,
+                         n_sample=500, seed=42):
+    """
+    Compute per-disease optimal classification thresholds by sweeping
+    F1-score on a sample of training patients.
+
+    Parameters
+    ----------
+    model       : trained HANPP_Disease (already on device, eval mode)
+    feats_np    : np.ndarray [N, in_dim] full training feature matrix
+    labels_np   : np.ndarray [N, num_diseases] binary labels
+    disease_order : list of disease names
+    device      : torch device
+    n_sample    : number of training patients to sample (default 500)
+    seed        : random seed
+
+    Returns
+    -------
+    {disease_name: optimal_threshold}
+    """
+    from sklearn.metrics import f1_score as sk_f1
+    from HAN.inductive import _no_precomputed_neighbors
+
+    rng = np.random.RandomState(seed)
+    N = feats_np.shape[0]
+    idx = rng.choice(N, min(n_sample, N), replace=False)
+
+    sample_feats = feats_np[idx]
+    sample_labels = labels_np[idx]
+
+    feats_t = torch.from_numpy(sample_feats.astype(np.float32)).to(device)
+
+    model.eval()
+    empty_nbr = {name: {} for name in model.metapath_names}
+    with _no_precomputed_neighbors(model), torch.no_grad():
+        logits, _, _ = model(feats_t, empty_nbr)
+        probs = torch.sigmoid(logits).cpu().numpy()  # [n_sample, num_diseases]
+
+    thresholds = {}
+    candidates = np.arange(0.1, 0.91, 0.05)
+
+    for j, disease in enumerate(disease_order):
+        y_true = sample_labels[:, j]
+        best_thr, best_f1 = 0.5, 0.0
+
+        for thr in candidates:
+            y_pred = (probs[:, j] >= thr).astype(int)
+            f1 = sk_f1(y_true, y_pred, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thr = float(thr)
+
+        thresholds[disease] = round(best_thr, 2)
+
+    print(f"  Calibrated thresholds ({len(thresholds)} diseases):")
+    for d, t in thresholds.items():
+        print(f"    {d:<35} threshold={t:.2f}")
+
+    return thresholds
+
 
 # ------------------------------------------------------------
 # Severity Level Determination
@@ -397,21 +462,18 @@ def load_model(checkpoint_path: str) -> HANPP_Disease:
 
 def determine_severity(final_score, abnormal_features):
 
-    max_z = 0
+    max_z = max((abs(f["z_ref"]) for f in abnormal_features), default=0)
 
-    for f in abnormal_features:
-        max_z = max(max_z, abs(f["z_ref"]))
-
-    # CRITICAL conditions
-    if final_score >= 1.5 or max_z >= 3:
+    # CRITICAL: very high fused score OR extreme lab deviation
+    if final_score >= 0.75 or max_z >= 3:
         return "CRITICAL", "c"
 
-    # WARNING conditions
-    elif final_score >= 1.0 or max_z >= 2:
+    # WARNING: elevated fused score OR significant lab deviation
+    elif final_score >= 0.50 or max_z >= 2:
         return "WARNING", "w"
 
-    # INFO conditions
-    elif final_score >= 0.5:
+    # INFO: moderate fused score
+    elif final_score >= 0.30:
         return "INFO", "i"
 
     else:
@@ -602,7 +664,10 @@ def predict_new_patient_v6(
     else:
         print(f"  {n_matched} non-zero features encoded from submitted tests.")
 
-    opt_thresholds = {d: 0.5 for d in disease_order}
+    print("\n[4b/5] Calibrating per-disease thresholds ...")
+    opt_thresholds = calibrate_thresholds(
+        model, feats_np, labels_np, disease_order, DEVICE
+    )
 
     # ── Step 5: Inductive MC-Dropout link scoring ─────────────────────────────
     print(f"\n[5/5] Running {MC_SAMPLES}-sample MC-Dropout link prediction ...")
@@ -643,19 +708,19 @@ def predict_new_patient_v6(
     # Fuse GNN link score with rule score
     # GNN score is already in [0, 1] (sigmoid output).
     # Rule score is in [0, ∞) — normalise it to [0, 1) using saturation:
-    #     norm_rule = rule / (1 + rule)
-    # This gives:  rule=0 → 0,  rule=1 → 0.5,  rule=3 → 0.75,  rule→∞ → 1
+    #     norm_rule = rule / (DELTA + rule)
+    # This gives:  rule=0 → 0,  rule=0.4 → 0.5,  rule=1.2 → 0.75,  rule→∞ → 1
     # After normalisation:  final_score = ALPHA*gnn + BETA*norm_rule  ∈ [0, 1]
     # This is directly interpretable as a probability — no sigmoid needed.
     #
-    # If rule_score == 0 (no abnormal lab evidence), zero out the final score
-    # entirely — GNN-only predictions without rule-based backing are omitted.
+    # If rule_score == 0 (no abnormal lab evidence), apply a dampened GNN floor
+    # so the GNN signal is reduced but not completely silenced.
     final_scores = {}
     for d in disease_order:
         gnn  = float(disease_probs.get(d, 0.0))
         rule = float(rule_scores.get(d, 0.0))
         if rule == 0.0:
-            final_scores[d] = 0.0
+            final_scores[d] = GNN_FLOOR * gnn   # dampened but not zero
         else:
             norm_rule = rule / (DELTA + rule)  # Rational normalization [0,1]
             final_scores[d] = ALPHA * gnn + BETA * norm_rule
