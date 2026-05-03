@@ -77,7 +77,7 @@ PROB_HIGH            = 0.70
 # Tuned via experiment_fusion_params.py grid search
 ALPHA = 0.3
 BETA  = 0.7
-DELTA = 0.5   # Rule-score normalization steepness: norm = rule / (DELTA + rule)
+DELTA = 0.4   # Rule-score normalization steepness: norm = rule / (DELTA + rule)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
